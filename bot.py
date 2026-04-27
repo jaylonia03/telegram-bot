@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 import time
 
 # ========== BOT CONFIG ==========
-BOT_TOKEN = os.environ.get('BOT_TOKEN', '8593941443:AAFpZ962tZt0wSuscCGjkUt5o_zVN4N9j30')
+BOT_TOKEN = os.environ.get('BOT_TOKEN', 'null')
 ADMIN_ID = int(os.environ.get('ADMIN_ID', '1975110056'))  # Your Telegram ID
 
 bot = telebot.TeleBot(BOT_TOKEN)
