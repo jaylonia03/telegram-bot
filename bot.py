@@ -352,7 +352,7 @@ def ad(call):
             pass
     
     markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("📺 Watch", url="https://monetag.com"))
+    markup.add(types.InlineKeyboardButton("📺 Watch", url="https://tithes101botads.blogspot.com/"))
     markup.add(types.InlineKeyboardButton("✅ Done", callback_data="ad_done"))
     bot.send_message(call.message.chat.id, "Watch ad to earn 5 coins:", reply_markup=markup)
 
