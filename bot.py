@@ -7,7 +7,7 @@ from datetime import datetime
 from flask import Flask, request
 
 # ========== CONFIG ==========
-BOT_TOKEN = "8593941443:AAF4aKPlw_JhB0txgWt63gG2OJTwkpY4VQI"
+BOT_TOKEN = "null"
 ADMIN_ID = 1975110056
 
 bot = telebot.TeleBot(BOT_TOKEN)
