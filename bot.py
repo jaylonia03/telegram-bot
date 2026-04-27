@@ -1,113 +1,64 @@
 import telebot
 from telebot import types
 import json
-import os
 import random
 import string
-from datetime import datetime, timedelta
-import time
+from datetime import datetime
+from flask import Flask, request
 
-# ========== BOT CONFIG ==========
-BOT_TOKEN = os.environ.get('BOT_TOKEN', 'null')
-ADMIN_ID = int(os.environ.get('ADMIN_ID', '1975110056'))  # Your Telegram ID
+# ========== CONFIG ==========
+BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
+ADMIN_ID = 1975110056
 
 bot = telebot.TeleBot(BOT_TOKEN)
+app = Flask(__name__)
 
-# ========== DATA FUNCTIONS (Using Vercel /tmp storage) ==========
-DATA_DIR = '/tmp/data'
-if not os.path.exists(DATA_DIR):
-    os.makedirs(DATA_DIR)
+# ========== MEMORY STORAGE ==========
+users_db = {}
+withdrawals_db = {}
+codes_db = {}
+config_db = {
+    "signup_bonus": 100,
+    "invite_bonus": 50,
+    "coin_value": 0.5,
+    "min_withdraw": 50,
+    "betting_win_rate": 45,
+    "coinflip_win_rate": 45,
+    "dice_win_rate": 45,
+    "checkin_rewards": {
+        "Sunday": 5, "Monday": 10, "Tuesday": 15,
+        "Wednesday": 20, "Thursday": 30, "Friday": 40, "Saturday": 50
+    }
+}
 
-def load_json(filename):
-    filepath = os.path.join(DATA_DIR, filename)
-    if os.path.exists(filepath):
-        with open(filepath, 'r') as f:
-            return json.load(f)
-    return {}
+# ========== HELPERS ==========
+def get_user(uid):
+    return users_db.get(str(uid))
 
-def save_json(filename, data):
-    filepath = os.path.join(DATA_DIR, filename)
-    with open(filepath, 'w') as f:
-        json.dump(data, f, indent=2)
-
-def get_user(user_id):
-    users = load_json('users.json')
-    return users.get(str(user_id))
-
-def save_user(user_id, data):
-    users = load_json('users.json')
-    users[str(user_id)] = data
-    save_json('users.json', users)
-
-def create_user(user_id, username, first_name):
-    if not get_user(user_id):
-        config = get_config()
-        save_user(user_id, {
-            "user_id": user_id,
-            "username": username or "NoUsername",
-            "first_name": first_name,
-            "balance": config.get('signup_bonus', 100),
-            "total_earned": config.get('signup_bonus', 100),
+def create_user(uid, uname, fname):
+    if str(uid) not in users_db:
+        users_db[str(uid)] = {
+            "user_id": uid,
+            "username": uname or "NoUsername",
+            "first_name": fname,
+            "balance": config_db["signup_bonus"],
+            "total_earned": config_db["signup_bonus"],
             "invite_count": 0,
             "last_checkin": None,
             "last_ad": None,
             "ads_watched": 0,
             "games_played": 0,
-            "banned": False,
-            "joined": datetime.now().isoformat()
-        })
+            "banned": False
+        }
         return True
     return False
 
-def update_balance(user_id, amount):
-    user = get_user(user_id)
+def update_balance(uid, amount):
+    user = get_user(uid)
     if user:
-        user['balance'] = user.get('balance', 0) + amount
-        user['total_earned'] = user.get('total_earned', 0) + max(0, amount)
-        save_user(user_id, user)
-
-def get_config():
-    config = load_json('config.json')
-    if not config:
-        config = {
-            "signup_bonus": 100,
-            "invite_bonus": 50,
-            "coin_value": 0.5,
-            "min_withdraw": 50,
-            "betting_win_rate": 45,
-            "crash_max": 100,
-            "coinflip_win_rate": 45,
-            "dice_win_rate": 45,
-            "checkin_rewards": {
-                "Sunday": 5, "Monday": 10, "Tuesday": 15,
-                "Wednesday": 20, "Thursday": 30, "Friday": 40, "Saturday": 50
-            }
-        }
-        save_json('config.json', config)
-    return config
-
-def save_config(config):
-    save_json('config.json', config)
-
-def get_withdrawals():
-    return load_json('withdrawals.json')
-
-def save_withdrawal(data):
-    withdrawals = load_json('withdrawals.json')
-    w_id = str(len(withdrawals) + 1)
-    data['id'] = w_id
-    data['status'] = 'pending'
-    data['date'] = datetime.now().isoformat()
-    withdrawals[w_id] = data
-    save_json('withdrawals.json', withdrawals)
-
-def get_codes():
-    return load_json('codes.json')
-
-def save_code(code, data):
-    codes = load_json('codes.json')
-    codes[code] = data
-    save_json('codes.json', codes)
+        user["balance"] += amount
+        if amount > 0:
+            user["total_earned"] += amount
 
 # ========== KEYBOARDS ==========
 def main_keyboard():
@@ -159,12 +110,10 @@ def admin_keyboard():
 # ========== START ==========
 @bot.message_handler(commands=['start'])
 def start(message):
-    user_id = message.from_user.id
-    username = message.from_user.username
-    first_name = message.from_user.first_name
-    config = get_config()
+    uid = message.from_user.id
+    uname = message.from_user.username
+    fname = message.from_user.first_name
     
-    # Referral
     ref_id = None
     if len(message.text.split()) > 1:
         try:
@@ -172,55 +121,48 @@ def start(message):
         except:
             pass
     
-    is_new = create_user(user_id, username, first_name)
+    is_new = create_user(uid, uname, fname)
     
-    if ref_id and is_new and ref_id != user_id:
-        update_balance(ref_id, config.get('invite_bonus', 50))
-        ref_user = get_user(ref_id)
-        if ref_user:
-            ref_user['invite_count'] = ref_user.get('invite_count', 0) + 1
-            save_user(ref_id, ref_user)
-        try:
-            bot.send_message(ref_id, f"🎉 +{config.get('invite_bonus', 50)} coins! {first_name} joined!")
-        except:
-            pass
+    if ref_id and is_new and ref_id != uid:
+        update_balance(ref_id, config_db["invite_bonus"])
+        ref = get_user(ref_id)
+        if ref:
+            ref["invite_count"] = ref.get("invite_count", 0) + 1
+            try:
+                bot.send_message(ref_id, f"🎉 +{config_db['invite_bonus']} coins! {fname} joined!")
+            except:
+                pass
     
-    if user_id == ADMIN_ID:
-        bot.send_message(message.chat.id, 
-            f"🔐 *ADMIN PANEL*\nBalance: {get_user(user_id).get('balance', 0)} coins",
-            parse_mode="Markdown",
-            reply_markup=admin_keyboard())
+    if uid == ADMIN_ID:
+        bot.send_message(message.chat.id, f"🔐 ADMIN PANEL\n\nWelcome {fname}!\nBalance: {get_user(uid)['balance']} coins", reply_markup=admin_keyboard())
     else:
-        user = get_user(user_id)
-        bot.send_message(message.chat.id,
-            f"""╔══════════════════╗
+        user = get_user(uid)
+        cv = config_db["coin_value"]
+        bot.send_message(message.chat.id, f"""╔══════════════════╗
    🎉 WELCOME! 🎉
 ╚══════════════════╝
 
-👋 {first_name}!
-💰 Balance: {user.get('balance', 0)} coins
-💵 Value: ₱{user.get('balance', 0) * config.get('coin_value', 0.5) / 100}
+👋 {fname}!
+💰 Balance: {user['balance']} coins
+💵 Value: ₱{user['balance'] * cv / 100}
 
-🎁 Sign-up Bonus: {config.get('signup_bonus', 100)} coins""",
-            reply_markup=main_keyboard())
+🎁 Sign-up Bonus: {config_db['signup_bonus']} coins""", reply_markup=main_keyboard())
 
 # ========== BALANCE ==========
 @bot.message_handler(func=lambda m: m.text == "💰 Balance")
 def balance(message):
     user = get_user(message.from_user.id)
-    config = get_config()
     if not user:
         bot.reply_to(message, "Please /start first!")
         return
-    
-    bot.send_message(message.chat.id,
-        f"""╔══════════════════╗
+    cv = config_db["coin_value"]
+    bot.send_message(message.chat.id, f"""╔══════════════════╗
       💰 BALANCE
 ╚══════════════════╝
 
-💎 Coins: {user.get('balance', 0)}
-💵 Value: ₱{user.get('balance', 0) * config.get('coin_value', 0.5) / 100}
-📊 Rate: 100 coins = ₱{config.get('coin_value', 0.5)}
+💎 Coins: {user['balance']}
+💵 Value: ₱{user['balance'] * cv / 100}
+📊 Rate: 100 coins = ₱{cv}
 
 🎮 Games: {user.get('games_played', 0)}
 📺 Ads: {user.get('ads_watched', 0)}
@@ -234,60 +176,55 @@ def games(message):
 @bot.callback_query_handler(func=lambda c: c.data == "game_bet")
 def bet_start(call):
     user = get_user(call.from_user.id)
-    if not user or user.get('balance', 0) < 1:
+    if not user or user['balance'] < 1:
         bot.answer_callback_query(call.id, "No balance!", show_alert=True)
         return
-    msg = bot.send_message(call.message.chat.id, "Enter bet amount (1-1000):")
-    bot.register_next_step_handler(msg, bet_amount)
+    msg = bot.send_message(call.message.chat.id, "Enter bet (1-1000):")
+    bot.register_next_step_handler(msg, bet_amt)
 
-def bet_amount(message):
+def bet_amt(message):
     try:
-        amount = int(message.text)
-        if amount < 1 or amount > 1000:
+        amt = int(message.text)
+        if amt < 1 or amt > 1000:
             bot.reply_to(message, "1-1000 only!")
             return
-        user = get_user(message.from_user.id)
-        if user.get('balance', 0) < amount:
-            bot.reply_to(message, "Not enough coins!")
+        if get_user(message.from_user.id)['balance'] < amt:
+            bot.reply_to(message, "Not enough!")
             return
-        
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(
-            types.InlineKeyboardButton("🔴 Odd", callback_data=f"bet_odd_{amount}"),
-            types.InlineKeyboardButton("⚫ Even", callback_data=f"bet_even_{amount}")
+            types.InlineKeyboardButton("🔴 Odd", callback_data=f"bet_odd_{amt}"),
+            types.InlineKeyboardButton("⚫ Even", callback_data=f"bet_even_{amt}")
         )
-        bot.send_message(message.chat.id, f"💎 Bet: {amount}\nChoose:", reply_markup=markup)
+        bot.send_message(message.chat.id, f"💎 {amt} coins\nChoose:", reply_markup=markup)
     except:
-        bot.reply_to(message, "Enter number only!")
+        bot.reply_to(message, "Invalid number!")
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("bet_"))
-def bet_result(call):
+def bet_res(call):
     user = get_user(call.from_user.id)
-    config = get_config()
     parts = call.data.split("_")
     choice = parts[1]
-    amount = int(parts[2])
+    amt = int(parts[2])
     
-    if user.get('balance', 0) < amount:
+    if user['balance'] < amt:
         bot.answer_callback_query(call.id, "No balance!", show_alert=True)
         return
     
-    update_balance(call.from_user.id, -amount)
-    user = get_user(call.from_user.id)
-    user['games_played'] = user.get('games_played', 0) + 1
-    save_user(call.from_user.id, user)
+    update_balance(call.from_user.id, -amt)
+    user['games_played'] += 1
     
-    number = random.randint(1, 100)
-    is_odd = number % 2 != 0
+    num = random.randint(1, 100)
+    is_odd = num % 2 != 0
     win = (is_odd and choice == "odd") or (not is_odd and choice == "even")
-    actual_win = random.randint(1, 100) <= config.get('betting_win_rate', 45)
+    actual = random.randint(1, 100) <= config_db["betting_win_rate"]
     
-    if actual_win and win:
-        winnings = amount * 2
+    if actual and win:
+        winnings = amt * 2
         update_balance(call.from_user.id, winnings)
-        msg = f"🎲 Number: {number}\n✅ WON {winnings} coins!"
+        msg = f"🎲 Number: {num}\n✅ WON {winnings} coins!"
     else:
-        msg = f"🎲 Number: {number}\n❌ LOST {amount} coins!"
+        msg = f"🎲 Number: {num}\n❌ LOST {amt} coins!"
     
     bot.edit_message_text(msg, call.message.chat.id, call.message.message_id)
 
@@ -295,105 +232,98 @@ def bet_result(call):
 @bot.callback_query_handler(func=lambda c: c.data == "game_coin")
 def coin_start(call):
     user = get_user(call.from_user.id)
-    if not user or user.get('balance', 0) < 1:
+    if not user or user['balance'] < 1:
         bot.answer_callback_query(call.id, "No balance!", show_alert=True)
         return
-    msg = bot.send_message(call.message.chat.id, "Enter bet amount (1-200):")
-    bot.register_next_step_handler(msg, coin_bet)
+    msg = bot.send_message(call.message.chat.id, "Enter bet (1-200):")
+    bot.register_next_step_handler(msg, coin_amt)
 
-def coin_bet(message):
+def coin_amt(message):
     try:
-        amount = int(message.text)
-        if amount < 1 or amount > 200:
+        amt = int(message.text)
+        if amt < 1 or amt > 200:
             bot.reply_to(message, "1-200 only!")
             return
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(
-            types.InlineKeyboardButton("👤 Heads", callback_data=f"coin_heads_{amount}"),
-            types.InlineKeyboardButton("🪙 Tails", callback_data=f"coin_tails_{amount}")
+            types.InlineKeyboardButton("👤 Heads", callback_data=f"coin_heads_{amt}"),
+            types.InlineKeyboardButton("🪙 Tails", callback_data=f"coin_tails_{amt}")
         )
-        bot.send_message(message.chat.id, f"💎 {amount} coins\nChoose:", reply_markup=markup)
+        bot.send_message(message.chat.id, f"💎 {amt} coins\nChoose:", reply_markup=markup)
     except:
-        bot.reply_to(message, "Enter number only!")
+        bot.reply_to(message, "Invalid number!")
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("coin_"))
-def coin_result(call):
+def coin_res(call):
     user = get_user(call.from_user.id)
-    config = get_config()
     parts = call.data.split("_")
     choice = parts[1]
-    amount = int(parts[2])
+    amt = int(parts[2])
     
-    if user.get('balance', 0) < amount:
+    if user['balance'] < amt:
         bot.answer_callback_query(call.id, "No balance!", show_alert=True)
         return
     
-    update_balance(call.from_user.id, -amount)
-    user = get_user(call.from_user.id)
-    user['games_played'] = user.get('games_played', 0) + 1
-    save_user(call.from_user.id, user)
+    update_balance(call.from_user.id, -amt)
+    user['games_played'] += 1
     
     result = random.choice(["heads", "tails"])
     win = choice == result
-    actual_win = random.randint(1, 100) <= config.get('coinflip_win_rate', 45)
+    actual = random.randint(1, 100) <= config_db["coinflip_win_rate"]
     
-    if actual_win and win:
-        winnings = amount * 2
+    if actual and win:
+        winnings = amt * 2
         update_balance(call.from_user.id, winnings)
         msg = f"🪙 {result.upper()}\n✅ WON {winnings} coins!"
     else:
-        msg = f"🪙 {result.upper()}\n❌ LOST {amount} coins!"
+        msg = f"🪙 {result.upper()}\n❌ LOST {amt} coins!"
     
     bot.edit_message_text(msg, call.message.chat.id, call.message.message_id)
 
-# ========== DICE ROLL ==========
+# ========== DICE ==========
 @bot.callback_query_handler(func=lambda c: c.data == "game_dice")
 def dice_start(call):
     user = get_user(call.from_user.id)
-    if not user or user.get('balance', 0) < 5:
+    if not user or user['balance'] < 5:
         bot.answer_callback_query(call.id, "Need 5 coins!", show_alert=True)
         return
     msg = bot.send_message(call.message.chat.id, "Enter bet (5-300):")
-    bot.register_next_step_handler(msg, dice_bet)
+    bot.register_next_step_handler(msg, dice_amt)
 
-def dice_bet(message):
+def dice_amt(message):
     try:
-        amount = int(message.text)
-        if amount < 5 or amount > 300:
+        amt = int(message.text)
+        if amt < 5 or amt > 300:
             bot.reply_to(message, "5-300 only!")
             return
-        user = get_user(message.from_user.id)
-        if user.get('balance', 0) < amount:
+        if get_user(message.from_user.id)['balance'] < amt:
             bot.reply_to(message, "Not enough!")
             return
         
-        update_balance(message.from_user.id, -amount)
+        update_balance(message.from_user.id, -amt)
         user = get_user(message.from_user.id)
-        user['games_played'] = user.get('games_played', 0) + 1
-        save_user(message.from_user.id, user)
+        user['games_played'] += 1
         
         dice = bot.send_dice(message.chat.id, emoji="🎲")
-        value = dice.dice.value
-        config = get_config()
+        val = dice.dice.value
         
-        if value > 3 and random.randint(1, 100) <= config.get('dice_win_rate', 45):
-            win = amount * 2
+        if val > 3 and random.randint(1, 100) <= config_db["dice_win_rate"]:
+            win = amt * 2
             update_balance(message.from_user.id, win)
-            bot.reply_to(message, f"🎯 Dice: {value}\n✅ WON {win} coins!")
+            bot.reply_to(message, f"🎯 Dice: {val}\n✅ WON {win} coins!")
         else:
-            bot.reply_to(message, f"🎯 Dice: {value}\n❌ LOST {amount} coins!")
+            bot.reply_to(message, f"🎯 Dice: {val}\n❌ LOST {amt} coins!")
     except:
-        bot.reply_to(message, "Enter number!")
+        bot.reply_to(message, "Invalid number!")
 
-# ========== EARN COINS ==========
+# ========== EARN ==========
 @bot.message_handler(func=lambda m: m.text == "📺 Earn Coins")
 def earn(message):
-    bot.send_message(message.chat.id, "📺 *EARN COINS*", parse_mode="Markdown", reply_markup=earn_keyboard())
+    bot.send_message(message.chat.id, "📺 *EARN*", parse_mode="Markdown", reply_markup=earn_keyboard())
 
 @bot.callback_query_handler(func=lambda c: c.data == "checkin")
 def checkin(call):
     user = get_user(call.from_user.id)
-    config = get_config()
     today = datetime.now().strftime("%Y-%m-%d")
     
     if user.get('last_checkin') == today:
@@ -401,297 +331,271 @@ def checkin(call):
         return
     
     day = datetime.now().strftime("%A")
-    reward = config.get('checkin_rewards', {}).get(day, 5)
+    reward = config_db["checkin_rewards"].get(day, 5)
     
     update_balance(call.from_user.id, reward)
     user['last_checkin'] = today
-    save_user(call.from_user.id, user)
     
     bot.answer_callback_query(call.id, f"+{reward} coins!", show_alert=True)
     bot.send_message(call.message.chat.id, f"📅 {day}\n✅ +{reward} coins!")
 
 @bot.callback_query_handler(func=lambda c: c.data == "ad")
-def watch_ad(call):
+def ad(call):
     user = get_user(call.from_user.id)
     
     if user.get('last_ad'):
-        last = datetime.fromisoformat(user['last_ad'])
-        if (datetime.now() - last).seconds < 1800:
-            bot.answer_callback_query(call.id, "Wait 30 mins!", show_alert=True)
-            return
+        try:
+            if (datetime.now() - datetime.fromisoformat(user['last_ad'])).seconds < 1800:
+                bot.answer_callback_query(call.id, "Wait 30 mins!", show_alert=True)
+                return
+        except:
+            pass
     
-    # Show ad button
     markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("📺 Watch Ad", url="https://monetag.com"))
-    markup.add(types.InlineKeyboardButton("✅ Done Watching", callback_data="ad_done"))
-    
-    bot.send_message(call.message.chat.id, "📺 Click below to watch:", reply_markup=markup)
+    markup.add(types.InlineKeyboardButton("📺 Watch", url="https://monetag.com"))
+    markup.add(types.InlineKeyboardButton("✅ Done", callback_data="ad_done"))
+    bot.send_message(call.message.chat.id, "Watch ad to earn 5 coins:", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda c: c.data == "ad_done")
 def ad_done(call):
     update_balance(call.from_user.id, 5)
     user = get_user(call.from_user.id)
     user['last_ad'] = datetime.now().isoformat()
-    user['ads_watched'] = user.get('ads_watched', 0) + 1
-    save_user(call.from_user.id, user)
-    
+    user['ads_watched'] += 1
     bot.answer_callback_query(call.id, "+5 coins!", show_alert=True)
     bot.edit_message_text("✅ +5 coins!", call.message.chat.id, call.message.message_id)
 
 # ========== INVITE ==========
 @bot.message_handler(func=lambda m: m.text == "👥 Invite")
 def invite(message):
-    bot_info = bot.get_me()
-    link = f"https://t.me/{bot_info.username}?start=ref{message.from_user.id}"
+    info = bot.get_me()
+    link = f"https://t.me/{info.username}?start=ref{message.from_user.id}"
     user = get_user(message.from_user.id)
-    config = get_config()
-    
-    bot.send_message(message.chat.id,
-        f"""╔══════════════════╗
-    👥 INVITE FRIENDS
+    bot.send_message(message.chat.id, f"""╔══════════════════╗
+    👥 INVITE
 ╚══════════════════╝
 
-🔗 Your Link:
-`{link}`
+🔗 `{link}`
+💰 Bonus: {config_db['invite_bonus']} coins
+📊 Invites: {user.get('invite_count', 0)}""", parse_mode="Markdown")
 
-💰 Bonus: {config.get('invite_bonus', 50)} coins each!
-📊 Invites: {user.get('invite_count', 0)}
-
-Share & earn!""",
-        parse_mode="Markdown")
-
-# ========== REDEEM CODE ==========
+# ========== REDEEM ==========
 @bot.message_handler(func=lambda m: m.text == "🎟️ Redeem Code")
 def redeem_prompt(message):
     msg = bot.reply_to(message, "Enter code:")
-    bot.register_next_step_handler(msg, redeem_code)
+    bot.register_next_step_handler(msg, redeem)
 
-def redeem_code(message):
+def redeem(message):
     code = message.text.strip().upper()
-    codes = get_codes()
-    
-    if code not in codes:
-        bot.reply_to(message, "❌ Invalid code!")
+    if code not in codes_db:
+        bot.reply_to(message, "❌ Invalid!")
         return
-    
-    code_data = codes[code]
-    if code_data.get('used', False):
+    if codes_db[code].get('used'):
+        bot.reply_to(message, "❌ Used!")
+        return
+    if str(message.from_user.id) in codes_db[code].get('used_by', []):
         bot.reply_to(message, "❌ Already used!")
         return
     
-    if str(message.from_user.id) in code_data.get('used_by', []):
-        bot.reply_to(message, "❌ You used this already!")
-        return
-    
-    amount = code_data.get('amount', 0)
-    update_balance(message.from_user.id, amount)
-    
-    if code_data.get('type') == 'single':
-        codes[code]['used'] = True
-    codes[code]['used_by'] = code_data.get('used_by', []) + [str(message.from_user.id)]
-    save_json('codes.json', codes)
-    
-    bot.reply_to(message, f"✅ +{amount} coins!")
+    update_balance(message.from_user.id, codes_db[code]['amount'])
+    if codes_db[code].get('type') == 'single':
+        codes_db[code]['used'] = True
+    codes_db[code]['used_by'] = codes_db[code].get('used_by', []) + [str(message.from_user.id)]
+    bot.reply_to(message, f"✅ +{codes_db[code]['amount']} coins!")
 
 # ========== WITHDRAW ==========
 @bot.message_handler(func=lambda m: m.text == "🏦 Withdraw")
 def withdraw(message):
     user = get_user(message.from_user.id)
-    config = get_config()
-    peso = user.get('balance', 0) * config.get('coin_value', 0.5) / 100
+    cv = config_db["coin_value"]
+    min_wd = config_db["min_withdraw"]
+    peso = user['balance'] * cv / 100
     
-    if peso < config.get('min_withdraw', 50):
-        bot.reply_to(message, f"❌ Min: ₱{config.get('min_withdraw', 50)}\nYou: ₱{peso:.2f}")
+    if peso < min_wd:
+        bot.reply_to(message, f"❌ Min: ₱{min_wd}\nYou: ₱{peso:.2f}")
         return
-    
-    msg = bot.send_message(message.chat.id, f"Balance: ₱{peso:.2f}\nEnter amount (₱):")
-    bot.register_next_step_handler(msg, process_wd)
+    msg = bot.send_message(message.chat.id, f"Balance: ₱{peso:.2f}\nEnter amount:")
+    bot.register_next_step_handler(msg, wd_amt)
 
-def process_wd(message):
+def wd_amt(message):
     try:
-        amount = float(message.text)
-        config = get_config()
+        amt = float(message.text)
+        cv = config_db["coin_value"]
         user = get_user(message.from_user.id)
-        max_wd = user.get('balance', 0) * config.get('coin_value', 0.5) / 100
+        max_wd = user['balance'] * cv / 100
         
-        if amount < config.get('min_withdraw', 50):
-            bot.reply_to(message, f"Min ₱{config.get('min_withdraw', 50)}")
+        if amt < config_db["min_withdraw"]:
+            bot.reply_to(message, f"Min ₱{config_db['min_withdraw']}")
             return
-        if amount > max_wd:
+        if amt > max_wd:
             bot.reply_to(message, f"Max ₱{max_wd:.2f}")
             return
         
-        coins = int(amount / config.get('coin_value', 0.5) * 100)
+        coins = int(amt / cv * 100)
         update_balance(message.from_user.id, -coins)
         
         msg = bot.send_message(message.chat.id, "Enter GCash/Maya number:")
-        bot.register_next_step_handler(msg, save_wd, amount, coins)
+        bot.register_next_step_handler(msg, save_wd, amt, coins)
     except:
-        bot.reply_to(message, "Enter valid amount!")
+        bot.reply_to(message, "Invalid!")
 
-def save_wd(message, amount, coins):
-    number = message.text.strip()
-    save_withdrawal({
+def save_wd(message, amt, coins):
+    num = message.text.strip()
+    w_id = str(int(datetime.now().timestamp()))
+    withdrawals_db[w_id] = {
+        "id": w_id,
         "user_id": message.from_user.id,
         "username": message.from_user.username,
+        "amount_peso": amt,
         "amount_coins": coins,
-        "amount_peso": amount,
-        "number": number
-    })
-    bot.reply_to(message, f"✅ Request sent!\n₱{amount}\nWait for approval.")
+        "number": num,
+        "status": "pending"
+    }
+    bot.reply_to(message, f"✅ Request sent!\n₱{amt}\nWait for approval.")
 
 # ========== STATS ==========
 @bot.message_handler(func=lambda m: m.text == "📊 Stats")
 def stats(message):
     user = get_user(message.from_user.id)
-    config = get_config()
-    bot.send_message(message.chat.id,
-        f"""╔══════════════════╗
+    cv = config_db["coin_value"]
+    bot.send_message(message.chat.id, f"""╔══════════════════╗
       📊 STATS
 ╚══════════════════╝
 
-💰 Balance: {user.get('balance', 0)}
-💵 Value: ₱{user.get('balance', 0) * config.get('coin_value', 0.5) / 100:.2f}
-📈 Earned: {user.get('total_earned', 0)}
+💰 Balance: {user['balance']}
+💵 Value: ₱{user['balance'] * cv / 100}
+📈 Earned: {user['total_earned']}
 🎮 Games: {user.get('games_played', 0)}
 📺 Ads: {user.get('ads_watched', 0)}
 👥 Invites: {user.get('invite_count', 0)}""")
 
-# ========== ADMIN PANEL ==========
+# ========== ADMIN ==========
 @bot.message_handler(func=lambda m: m.text == "📊 Dashboard" and m.from_user.id == ADMIN_ID)
-def admin_dashboard(message):
-    users = load_json('users.json')
-    wds = get_withdrawals()
-    config = get_config()
-    pending = sum(1 for w in wds.values() if w.get('status') == 'pending')
-    
-    total_coins = sum(u.get('balance', 0) for u in users.values())
-    
-    bot.send_message(message.chat.id,
-        f"""📊 *DASHBOARD*
-
-👥 Users: {len(users)}
-💰 Total Coins: {total_coins}
-💵 Value: ₱{total_coins * config.get('coin_value', 0.5) / 100:.2f}
-🏦 Pending WD: {pending}""",
-        parse_mode="Markdown")
+def dash(message):
+    total = sum(u['balance'] for u in users_db.values())
+    pending = sum(1 for w in withdrawals_db.values() if w['status'] == 'pending')
+    cv = config_db["coin_value"]
+    bot.send_message(message.chat.id, f"""📊 DASHBOARD
+👥 Users: {len(users_db)}
+💰 Coins: {total}
+💵 Value: ₱{total * cv / 100}
+🏦 Pending: {pending}""")
 
 @bot.message_handler(func=lambda m: m.text == "⚙️ Edit Settings" and m.from_user.id == ADMIN_ID)
-def admin_settings(message):
-    config = get_config()
+def settings(message):
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
-        types.InlineKeyboardButton("Sign-up Bonus", callback_data="edit_signup"),
-        types.InlineKeyboardButton("Invite Bonus", callback_data="edit_invite"),
-        types.InlineKeyboardButton("Coin Value", callback_data="edit_coinvalue"),
-        types.InlineKeyboardButton("Min Withdraw", callback_data="edit_minwd"),
-        types.InlineKeyboardButton("Win Rate %", callback_data="edit_winrate")
+        types.InlineKeyboardButton("Sign-up", callback_data="ed_signup"),
+        types.InlineKeyboardButton("Invite", callback_data="ed_invite"),
+        types.InlineKeyboardButton("Coin Value", callback_data="ed_cv"),
+        types.InlineKeyboardButton("Min WD", callback_data="ed_minwd"),
+        types.InlineKeyboardButton("Win Rate", callback_data="ed_wr")
     )
-    bot.send_message(message.chat.id, f"⚙️ *Current Settings*\nSign-up: {config.get('signup_bonus')}\nInvite: {config.get('invite_bonus')}\nValue: {config.get('coin_value')}\nMin WD: {config.get('min_withdraw')}\nWin Rate: {config.get('betting_win_rate')}%", parse_mode="Markdown", reply_markup=markup)
+    bot.send_message(message.chat.id, f"Sign-up: {config_db['signup_bonus']}\nInvite: {config_db['invite_bonus']}\nValue: {config_db['coin_value']}\nMin WD: {config_db['min_withdraw']}\nWin: {config_db['betting_win_rate']}%", reply_markup=markup)
 
-@bot.callback_query_handler(func=lambda c: c.data.startswith("edit_") and c.from_user.id == ADMIN_ID)
-def edit_setting(call):
-    keys = {"edit_signup": "signup_bonus", "edit_invite": "invite_bonus", "edit_coinvalue": "coin_value", "edit_minwd": "min_withdraw", "edit_winrate": "betting_win_rate"}
-    key = keys.get(call.data)
+@bot.callback_query_handler(func=lambda c: c.data.startswith("ed_") and c.from_user.id == ADMIN_ID)
+def edit(call):
+    keys = {"ed_signup": "signup_bonus", "ed_invite": "invite_bonus", "ed_cv": "coin_value", "ed_minwd": "min_withdraw", "ed_wr": "betting_win_rate"}
+    key = keys[call.data]
     msg = bot.send_message(call.message.chat.id, f"New value for {key}:")
-    bot.register_next_step_handler(msg, update_setting, key)
+    bot.register_next_step_handler(msg, update, key)
 
-def update_setting(message, key):
+def update(message, key):
     try:
-        value = float(message.text)
-        config = get_config()
-        config[key] = value
-        save_config(config)
-        bot.reply_to(message, f"✅ {key} = {value}")
+        config_db[key] = float(message.text)
+        bot.reply_to(message, f"✅ {key} = {config_db[key]}")
     except:
         bot.reply_to(message, "Invalid!")
 
 @bot.message_handler(func=lambda m: m.text == "🏦 Pending WDs" and m.from_user.id == ADMIN_ID)
-def admin_wds(message):
-    wds = get_withdrawals()
-    pending = {k: v for k, v in wds.items() if v.get('status') == 'pending'}
-    
+def wds(message):
+    pending = {k: v for k, v in withdrawals_db.items() if v['status'] == 'pending'}
     if not pending:
-        bot.reply_to(message, "No pending withdrawals!")
+        bot.reply_to(message, "No pending!")
         return
-    
-    for w_id, w in list(pending.items())[:10]:
+    for w_id, w in list(pending.items())[:5]:
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(
-            types.InlineKeyboardButton("✅ Approve", callback_data=f"wd_approve_{w_id}"),
-            types.InlineKeyboardButton("❌ Reject", callback_data=f"wd_reject_{w_id}")
+            types.InlineKeyboardButton("✅ Approve", callback_data=f"wda_{w_id}"),
+            types.InlineKeyboardButton("❌ Reject", callback_data=f"wdr_{w_id}")
         )
-        bot.send_message(message.chat.id,
-            f"🏦 *WD Request #{w_id}*\nUser: {w.get('username')}\nAmount: ₱{w.get('amount_peso')}\nNumber: {w.get('number')}\nDate: {w.get('date', '')[:10]}",
-            parse_mode="Markdown", reply_markup=markup)
+        bot.send_message(message.chat.id, f"ID: {w_id}\nUser: {w['username']}\n₱{w['amount_peso']}\n{w['number']}", reply_markup=markup)
 
-@bot.callback_query_handler(func=lambda c: c.data.startswith("wd_") and c.from_user.id == ADMIN_ID)
+@bot.callback_query_handler(func=lambda c: c.data.startswith("wd") and c.from_user.id == ADMIN_ID)
 def handle_wd(call):
-    parts = call.data.split("_")
-    action = parts[1]
-    w_id = parts[2]
-    wds = get_withdrawals()
-    
-    if w_id in wds:
-        wds[w_id]['status'] = 'approved' if action == 'approve' else 'rejected'
-        save_json('withdrawals.json', wds)
-        
-        if action == 'reject':
-            update_balance(wds[w_id]['user_id'], wds[w_id]['amount_coins'])
-        
-        bot.edit_message_text(f"{'✅ Approved' if action == 'approve' else '❌ Rejected'} #{w_id}",
-            call.message.chat.id, call.message.message_id)
+    w_id = call.data.split("_")[1]
+    if call.data.startswith("wda_"):
+        withdrawals_db[w_id]['status'] = 'approved'
+        bot.edit_message_text(f"✅ Approved #{w_id}", call.message.chat.id, call.message.message_id)
+    else:
+        withdrawals_db[w_id]['status'] = 'rejected'
+        update_balance(withdrawals_db[w_id]['user_id'], withdrawals_db[w_id]['amount_coins'])
+        bot.edit_message_text(f"❌ Rejected #{w_id}", call.message.chat.id, call.message.message_id)
 
 @bot.message_handler(func=lambda m: m.text == "🎟️ Create Code" and m.from_user.id == ADMIN_ID)
 def create_code(message):
-    msg = bot.send_message(message.chat.id, "Format: AMOUNT-TYPE\nExample: 100-single\nType: single/multi")
+    msg = bot.send_message(message.chat.id, "Format: AMOUNT-TYPE\nExample: 100-single")
     bot.register_next_step_handler(msg, make_code)
 
 def make_code(message):
     try:
         parts = message.text.split("-")
-        amount = int(parts[0])
-        c_type = parts[1] if len(parts) > 1 else "single"
-        
+        amt = int(parts[0])
+        ctype = parts[1] if len(parts) > 1 else "single"
         code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
-        save_code(code, {"amount": amount, "type": c_type, "used": False, "used_by": [], "created": datetime.now().isoformat()})
-        
-        bot.reply_to(message, f"✅ Code: `{code}`\nAmount: {amount}\nType: {c_type}", parse_mode="Markdown")
-    except:
-        bot.reply_to(message, "Invalid format!")
-
-@bot.message_handler(func=lambda m: m.text == "💰 Add Bonus" and m.from_user.id == ADMIN_ID)
-def add_bonus_prompt(message):
-    msg = bot.send_message(message.chat.id, "Format: USER_ID-AMOUNT\nExample: 123456-100")
-    bot.register_next_step_handler(msg, add_bonus)
-
-def add_bonus(message):
-    try:
-        parts = message.text.split("-")
-        uid = int(parts[0])
-        amount = int(parts[1])
-        update_balance(uid, amount)
-        try:
-            bot.send_message(uid, f"🎁 Admin added {amount} coins!")
-        except:
-            pass
-        bot.reply_to(message, f"✅ +{amount} to {uid}")
+        codes_db[code] = {"amount": amt, "type": ctype, "used": False, "used_by": []}
+        bot.reply_to(message, f"✅ Code: `{code}`\nAmount: {amt}\nType: {ctype}", parse_mode="Markdown")
     except:
         bot.reply_to(message, "Invalid!")
 
+@bot.message_handler(func=lambda m: m.text == "💰 Add Bonus" and m.from_user.id == ADMIN_ID)
+def bonus_prompt(message):
+    msg = bot.send_message(message.chat.id, "Format: USER_ID-AMOUNT")
+    bot.register_next_step_handler(msg, bonus)
+
+def bonus(message):
+    try:
+        parts = message.text.split("-")
+        uid = int(parts[0])
+        amt = int(parts[1])
+        update_balance(uid, amt)
+        bot.reply_to(message, f"✅ +{amt} to {uid}")
+    except:
+        bot.reply_to(message, "Invalid!")
+
+@bot.message_handler(func=lambda m: m.text == "👥 User List" and m.from_user.id == ADMIN_ID)
+def users_list(message):
+    sorted_users = sorted(users_db.items(), key=lambda x: x[1]['balance'], reverse=True)[:20]
+    text = "👥 TOP 20\n\n"
+    for i, (uid, u) in enumerate(sorted_users, 1):
+        text += f"{i}. {u['first_name']} - {u['balance']} coins\n"
+    bot.send_message(message.chat.id, text)
+
+@bot.message_handler(func=lambda m: m.text == "📢 Broadcast" and m.from_user.id == ADMIN_ID)
+def bc_prompt(message):
+    msg = bot.send_message(message.chat.id, "Enter message:")
+    bot.register_next_step_handler(msg, bc)
+
+def bc(message):
+    count = 0
+    for uid in users_db:
+        try:
+            bot.send_message(int(uid), f"📢 {message.text}")
+            count += 1
+        except:
+            pass
+    bot.reply_to(message, f"✅ Sent to {count} users!")
+
 @bot.message_handler(func=lambda m: m.text == "🔙 User Mode" and m.from_user.id == ADMIN_ID)
 def user_mode(message):
-    bot.send_message(message.chat.id, "Switched to user mode", reply_markup=main_keyboard())
+    bot.send_message(message.chat.id, "User Mode", reply_markup=main_keyboard())
 
 @bot.callback_query_handler(func=lambda c: c.data == "back")
-def go_back(call):
+def back(call):
     bot.delete_message(call.message.chat.id, call.message.message_id)
-    bot.send_message(call.message.chat.id, "Main menu:", reply_markup=main_keyboard())
+    bot.send_message(call.message.chat.id, "Main Menu:", reply_markup=main_keyboard())
 
-# ========== WEBHOOK FOR VERCEL ==========
-from flask import Flask, request
-app = Flask(__name__)
-
+# ========== VERCEL WEBHOOK ==========
 @app.route('/')
 def home():
     return "Bot is running!"
@@ -699,13 +603,8 @@ def home():
 @app.route('/webhook', methods=['POST'])
 def webhook():
     if request.headers.get('content-type') == 'application/json':
-        json_string = request.get_data().decode('utf-8')
-        update = telebot.types.Update.de_json(json_string)
+        json_str = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_str)
         bot.process_new_updates([update])
         return 'OK', 200
     return 'Bad Request', 403
-
-# For local testing
-if __name__ == '__main__':
-    print("Starting bot...")
-    bot.polling(none_stop=True)
